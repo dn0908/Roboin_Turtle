@@ -1,2 +1,6 @@
 # Roboin_Turtle
-Trutlebot
+Trutlebot3 burger
+- RaspberryPi 3B+
+- Pi Camera (Fisheye)
+- Huskey Lens
+- ROS
