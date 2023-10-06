@@ -1,6 +1,6 @@
 # Roboin_Turtle
 Trutlebot3 burger
-- RaspberryPi 3B+
+- RaspberryPi 4B+ 4gb
 - Pi Camera (Fisheye)
-- Huskey Lens
-- ROS
+- USB Webcam
+- ROS kinetic + Ubuntu 16.04
