@@ -1,0 +1,7 @@
+lane:
+  yellow:
+    lower: [19, 237, 231]
+    upper: [33, 255, 255]
+  white:
+    lower: [0, 0, 105]
+    upper: [179, 70, 255]

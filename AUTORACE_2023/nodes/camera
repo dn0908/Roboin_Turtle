@@ -1,0 +1,62 @@
+#!/usr/bin/env python
+import rospy
+import numpy as np
+import cv2
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CompressedImage
+
+class ImageProjection():
+    def __init__(self):
+        self.top_x = rospy.get_param("~projection/top_x")
+        self.top_y = rospy.get_param("~projection/top_y")
+        self.bottom_x = rospy.get_param("~projection/bottom_x")
+        self.bottom_y = rospy.get_param("~projection/bottom_y")
+
+        self.sub_image_type = "compressed"
+        self.pub_image_type = "raw"
+
+        if self.sub_image_type not in ["raw", "compressed"] or self.pub_image_type not in ["raw", "compressed"]:
+            raise ValueError('`sub/pub_image_type` must be either "raw" or "compressed".')
+
+        if self.sub_image_type == "raw":
+            self.sub_image = rospy.Subscriber('/camera/image', Image, self.cb_image_projection, queue_size=1)
+        elif self.sub_image_type == "compressed":
+            self.sub_image = rospy.Subscriber('/camera/image/compressed', CompressedImage, self.cb_image_projection, queue_size=1)
+
+        if self.pub_image_type == "raw":
+            self.pub_image = rospy.Publisher('/detect/image', Image, queue_size=1)
+        elif self.pub_image_type == "compressed":
+            self.pub_image = rospy.Publisher('/detect/image/compressed', CompressedImage, queue_size=1)
+
+        self.cv_bridge = CvBridge()
+
+    def cb_image_projection(self, image_msg):
+        if self.sub_image_type == "raw":
+            image = self.cv_bridge.imgmsg_to_cv2(image_msg, "bgr8")
+        elif self.sub_image_type == "compressed":
+            image = self.cv_bridge.compressed_imgmsg_to_cv2(image_msg, "bgr8")
+
+        image = cv2.GaussianBlur(image, (5, 5), 0)
+
+        src_pts = np.array([[160 - self.top_x, 180 - self.top_y], [160 + self.top_x, 180 - self.top_y], [160 + self.bottom_x, 120 + self.bottom_y], [160 - self.bottom_x, 120 + self.bottom_y]])
+        dst_pts = np.array([[200, 0], [800, 0], [800, 600], [200, 600]])
+
+        homography_M, _ = cv2.findHomography(src_pts, dst_pts)
+
+        warped_image = cv2.warpPerspective(image, homography_M, (1000, 600))
+
+        triangles_pts = np.array([[[0, 599], [0, 340], [200, 599]], [[999, 599], [999, 340], [799, 599]]]).reshape((-1, 1, 2))
+        warped_image = cv2.fillPoly(warped_image, [triangles_pts], color=(0, 0, 0))
+
+        if self.pub_image_type == "raw":
+            self.pub_image.publish(self.cv_bridge.cv2_to_imgmsg(warped_image, "bgr8"))
+        elif self.pub_image_type == "compressed":
+            self.pub_image.publish(self.cv_bridge.cv2_to_compressed_imgmsg(warped_image, "jpg"))
+
+if __name__ == '__main__':
+    try:
+        rospy.init_node('camera')
+        node = ImageProjection()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass

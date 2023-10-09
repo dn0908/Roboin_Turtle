@@ -1,0 +1,126 @@
+#!/usr/bin/env python
+import rospy
+import numpy as np
+import cv2
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CompressedImage
+from turtlebot3_autorace_2023.msg import TracingParam
+from std_srvs.srv import Trigger, TriggerResponse
+
+class DetectTrafficLight():
+    def __init__(self):
+        self.lower_green = rospy.get_param("~traffic_light/green/lower")
+        self.upper_green = rospy.get_param("~traffic_light/green/upper")
+
+        self.image = None
+        self.success = False
+
+        self.sub_image_type = "compressed"
+        self.pub_image_type = "compressed"
+
+        if self.sub_image_type not in ["raw", "compressed"]:
+            raise ValueError('`sub/pub_image_type` must be either "raw" or "compressed".')
+
+        if self.sub_image_type == "raw":
+            self.sub_image = rospy.Subscriber('/camera/image', Image, self.cb_get_image, queue_size=1)
+        elif self.sub_image_type == "compressed":
+            self.sub_image = rospy.Subscriber('/camera/image/compressed', CompressedImage, self.cb_get_image, queue_size=1)
+
+        if self.pub_image_type == "raw":
+            self.pub_image = rospy.Publisher('/lane/image', Image, queue_size=1)
+        elif self.pub_image_type == "compressed":
+            self.pub_image = rospy.Publisher('/lane/image/compressed', CompressedImage, queue_size=1)
+
+        self.cv_bridge = CvBridge()
+
+        self.counter = 1
+
+        rate = rospy.Rate(10)
+        while not rospy.is_shutdown() and self.image is None:
+            rate.sleep()
+
+        for _ in range(100):
+            self.fn_find_traffic_light()
+            if self.success:
+                break
+            rate.sleep()
+
+    def cb_get_image(self, image_msg):
+        if self.counter % 3 != 0:
+            self.counter += 1
+            return
+        else:
+            self.counter = 1
+
+        if self.sub_image_type == "raw":
+            self.image = self.cv_bridge.imgmsg_to_cv2(image_msg, "bgr8")
+        elif self.sub_image_type == "compressed":
+            self.image = self.cv_bridge.compressed_imgmsg_to_cv2(image_msg, "bgr8")
+
+    def fn_find_traffic_light(self):
+        green_mask = self.fn_mask_green_traffic_light()
+        green_mask = cv2.GaussianBlur(green_mask, (5, 5), 0)
+
+        self.fn_find_circle_of_traffic_light(green_mask)
+
+    def fn_mask_green_traffic_light(self):
+        hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
+
+        green_mask = cv2.inRange(hsv, np.array(self.lower_green), np.array(self.upper_green))
+
+        return cv2.bitwise_not(green_mask)
+
+    def fn_find_circle_of_traffic_light(self, mask):
+        params = cv2.SimpleBlobDetector_Params()
+
+        params.minThreshold = 0
+        params.maxThreshold = 255
+
+        params.filterByArea = True
+        params.minArea = 50
+        params.maxArea = 600
+
+        params.filterByCircularity = True
+        params.minCircularity = 0.4
+
+        params.filterByConvexity = True
+        params.minConvexity = 0.6
+
+        detector = cv2.SimpleBlobDetector_create(params)
+        key_pts = detector.detect(mask)
+
+        if len(key_pts) > 0:
+            self.success = True
+            self.image = cv2.drawKeypoints(self.image, key_pts, np.array([]), color=(0, 255, 255), flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+
+            if self.pub_image_type == "raw":
+                self.pub_image.publish(self.cv_bridge.cv2_to_imgmsg(self.image, "bgr8"))
+            elif self.pub_image_type == "compressed":
+                self.pub_image.publish(self.cv_bridge.cv2_to_compressed_imgmsg(self.image, "jpg"))
+
+class TrafficLightController():
+    def __init__(self):
+        rospy.Service('/traffic_light', Trigger, self.cb_traffic_light)
+
+        self.pub_tracing = rospy.Publisher('/detect/tracing', TracingParam, queue_size=1)
+
+    def cb_traffic_light(self, _):
+        response = TriggerResponse()
+        detection = DetectTrafficLight()
+        response.success = detection.success
+        if response.success:
+            tracing_param = TracingParam()
+            tracing_param.trace_yellow = True
+            tracing_param.trace_white = True
+            self.pub_tracing.publish(tracing_param)
+        else:
+            response.message = "[FAILED] Mission 1: Traffic Light Mission"
+        return response
+
+if __name__ == '__main__':
+    try:
+        rospy.init_node('control_traffic_light')
+        node = TrafficLightController()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        pass
