@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+
+import rospy
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import torch
+import yaml
+import sys
+# import custom msg
+from turtlebot3_autorace_2023.msg import ObjectDetection
+
+class ObjectDetectionNode:
+    def __init__(self):
+        rospy.init_node('object_detection_node')
+        self.bridge = CvBridge()
+        
+        # Load the YOLOv5 model
+        self.model = self.load_model('/home/roboin/Roboin_Turtle/AUTORACE_2023/nodes/model/best.pt')
+    
+        # Load class names from data.yaml
+        with open('./yolov5/roboin_yolo-2/data.yaml', 'r') as yaml_file:
+            data = yaml.safe_load(yaml_file)
+            self.class_names = data['names']
+
+        # Subscribe to the image topic
+        self.image_sub = rospy.Subscriber('/logitech_720/image_raw', Image, self.image_callback)
+
+        # Create a publisher for the custom message
+        self.detected_class_publisher = rospy.Publisher('/detected_class', DetectedClass, queue_size=10)
+
+    def load_model(self, model_path):
+        try:
+            # Modify sys.path if necessary
+            sys.path.insert(0, "~/YOLO_V5_training/yolov5")
+            from models.experimental import attempt_load
+            return attempt_load(model_path)
+        except Exception as e:
+            rospy.logerr("Failed to load the YOLOv5 model: %s", str(e))
+            rospy.signal_shutdown("Failed to load the YOLOv5 model")
+
+    def image_callback(self, msg):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            img = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+            img_tensor = torch.from_numpy(img).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+            results = self.model(img_tensor)
+            self.process_detections(results, cv_image)
+        except Exception as e:
+            rospy.logerr("Error processing image: %s", str(e))
+
+    def process_detections(self, results, cv_image):
+        # Assuming there's a confidence threshold you want to apply
+        conf_thresh = 0.15
+        detections = results[0]
+
+        mask = detections[..., 4] > conf_thresh
+        boxes = detections[mask, :4].cpu().numpy()
+        scores = detections[mask, 4].cpu().numpy()
+        classes = detections[mask, 5].cpu().numpy().astype(int)
+
+        for box, score, class_idx in zip(boxes, scores, classes):
+            x1, y1, x2, y2 = map(int, box)
+            class_name = self.class_names[class_idx]
+            
+            # Create an instance of the custom message and populate it
+            detected_class_msg = DetectedClass()
+            detected_class_msg.class_name = class_name
+            
+            # Publish the detected class name
+            self.detected_class_publisher.publish(detected_class_msg)
+
+            # Print the coordinates of the detected object
+            rospy.loginfo("%s coordinates: (%d, %d), (%d, %d)", class_name, x1, y1, x2, y2)
+
+            # # Draw bounding boxes and labels
+            # cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # cv2.putText(cv_image, f"{class_name}: {score:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        # # Display the frame on the screen
+        # cv2.imshow('Object Detection', cv_image)
+        # cv2.waitKey(1)
+
+    def run(self):
+        rospy.spin()
+
+if __name__ == '__main__':
+    try:
+        node = ObjectDetectionNode()
+        node.run()
+    except rospy.ROSInterruptException:
+        pass
